@@ -26,7 +26,10 @@ pub fn get_events(evtc_log: &EvtcLog, player: &EvtcAgent, target: &EvtcAgent, mu
 
     // There's no implementation for reversing the other sigils.
     // Notably, anything that may cause overstacks (vuln) will be resimmed wrong because overstacked applications will be missing.
-    assert!(stats.set_1_sigils.iter().all(|x| *x == Sigil::Earth || *x == Sigil::Doom || *x == Sigil::Geomancy));
+    assert!(stats.set_1_sigils.iter().all(|x| *x == Sigil::Earth || *x == Sigil::Doom || *x == Sigil::Geomancy || *x == Sigil::Frailty));
+    if stats.set_1_sigils.iter().all(|x| *x == Sigil::Frailty) {
+        eprintln!("Frailty sigil in original log, may cause wrong resimulation because of missing overstacked applications!!")
+    }
 
     fn get_same_time_events(events: &Vec<&EvtcCombatItem>, i: usize, delta: i64) -> Range<usize> {
         let time = events[i].time;
@@ -98,8 +101,8 @@ pub fn get_events(evtc_log: &EvtcLog, player: &EvtcAgent, target: &EvtcAgent, mu
                 assert!(gamedata::get_skill_type(skill_id) == SkillType::Condition);
                 if source_agent == player.address && agent == target.address {
                     let base_duration = get_base_duration(&mut stats, skill_id, duration, event.time);
-                    // Misery Swipe (mace aa1) 5s torment
-                    // Anguish Swipe (mace aa2) 5s torment
+                    // Misery Swipe (mace aa1) 3s torment
+                    // Anguish Swipe (mace aa2) 3s torment
                     // Manifest Toxin (mace aa3) 12s poison
                     // Searing Fissure (mace 2) 3s burning x3
                     //                          1s burning (pulses)
@@ -110,7 +113,7 @@ pub fn get_events(evtc_log: &EvtcLog, player: &EvtcAgent, target: &EvtcAgent, mu
                     // Spiritcrush (sb 4) 3s burning x4
                     // Scorchrazor (sb 5) 4s burning
                     // Citadel Bombardment 1.5s burning
-                    // Embrace the Darkness 6s torment (1+2x if empowered)
+                    // Embrace the Darkness 5.5s torment (1+2x if empowered)
                     // Geomancy 8s bleed x3
                     // Doom 8s poison x3
                     // Earth 6s bleed
@@ -335,32 +338,11 @@ pub fn get_events(evtc_log: &EvtcLog, player: &EvtcAgent, target: &EvtcAgent, mu
                 }
             } else {
                 let damaging_condition = DamagingCondition::from_id(event.skill_id);
-                if damaging_condition == DamagingCondition::Torment {
-                    let vuln_multiplier = 1. + target_buffs.get_stack_count(ids::skills::VULNERABILITY, event.time) as f64 * 0.01;
-                    let assuming_moving = damage as f64 / stats.condition_damage_mult(damaging_condition, event.time) / vuln_multiplier
-                        - gamedata::TORMENT_MOVING_MULTIPLIER * stats.condition_damage(event.time) as f64;
-                    let assuming_static = damage as f64 / stats.condition_damage_mult(damaging_condition, event.time) / vuln_multiplier
-                        - gamedata::TORMENT_MULTIPLIER * stats.condition_damage(event.time) as f64;
-                    if assuming_moving >= 0. {
-                        eprintln!("[{}] static {} moving {} | damage {} mult {}, cdamage {}, vuln_mult {}",
-                                  event.time, assuming_static, assuming_moving,
-                                  damage,
-                                  stats.condition_damage_mult(damaging_condition, event.time),
-                                  stats.condition_damage(event.time),
-                                  vuln_multiplier
-                        );
-                        unimplemented!("Detecting moving torment is not implemented, but seems to appear in the log.")
-                    }
-                }
+                let dst_moving = (event.is_moving & 0b10) >> 1 == 1;
 
                 if event.time - last_condition_tick > 5 {
                     assert_eq!(gamedata::get_skill_type(event.skill_id), SkillType::Condition);
-                    let moving = false;
-                    // Always assumed to be unmoving, the code above detects it
-                    // (assuming it's actually correct), but to properly use it,
-                    // we'd need to run it on all damage events, not just the
-                    // first one from the batch (that one might not be torment).
-                    simulation_events.push(ConditionTick { time: event.time, target_moving: moving });
+                    simulation_events.push(ConditionTick { time: event.time, target_moving: dst_moving });
                 }
                 last_condition_tick = event.time;
             }

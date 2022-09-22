@@ -306,6 +306,7 @@ impl BuffUptimes for LogBuffUptimes {
 #[derive(Eq, PartialEq, Copy, Clone, Debug)]
 pub enum Sigil {
     None,
+    Frailty,
     Geomancy,
     Earth,
     Doom,
@@ -343,9 +344,7 @@ impl<TUptimes: BuffUptimes> PlayerStats<TUptimes> {
         //self.precision
     }
     fn ferocity(&mut self, time: i64) -> u32 {
-        let kallas_fervor = self.buff_uptimes.get_stack_count(ids::skills::KALLAS_FERVOR, time);
-        assert!(kallas_fervor <= gamedata::get_stack_limit(ids::skills::KALLAS_FERVOR));
-        self.ferocity + kallas_fervor * 30
+        self.ferocity
     }
     fn condition_damage(&mut self, time: i64) -> u32 {
         let might = self.buff_uptimes.get_stack_count(ids::skills::MIGHT, time);
@@ -379,22 +378,34 @@ impl<TUptimes: BuffUptimes> PlayerStats<TUptimes> {
         (1. + self.concentration as f64 / 1500.).min(2.)
     }
     fn condition_damage_mult(&mut self, condition: DamagingCondition, time: i64) -> f64 {
-        // These multipliers seem to be multiplicative
-        let mut multiplier = 1.;
+        let mut additive_part = 0.;
+        let mut multiplicative_part = 1.;
         let kallas_fervor = self.buff_uptimes.get_stack_count(ids::skills::KALLAS_FERVOR, time);
         assert!(kallas_fervor <= gamedata::get_stack_limit(ids::skills::KALLAS_FERVOR));
-        multiplier *= 1. + kallas_fervor as f64 * stats::KALLAS_FERVOR_CONDITION_DAMAGE_MULTIPLIER;
+        additive_part += kallas_fervor as f64 * stats::KALLAS_FERVOR_CONDITION_DAMAGE_MULTIPLIER;
 
         if let Some(extra_damage) = self.extra_condition_damages.get(&condition) {
-            multiplier *= 1. + extra_damage;
+            multiplicative_part *= 1. + extra_damage;
         }
+
+        // TODO: Put behind trait flag
+        // Destructive Impulses
+        let weapon_type = match self.weapon_set {
+            WeaponSet::Land1 => &self.weapon_set_types[0],
+            WeaponSet::Land2 => &self.weapon_set_types[1],
+        };
+        multiplicative_part *= 1. + match weapon_type {
+            WeaponType::DualWield => 0.1,
+            WeaponType::TwoHanded => 0.05,
+        };
 
         if self.current_sigils().contains(&Sigil::Bursting) {
-            multiplier *= 1.05;
+            multiplicative_part *= 1.05;
         }
 
-        multiplier
+        multiplicative_part * (1. + additive_part)
     }
+
     fn power_damage_mult<TTargetBuffs: BuffUptimes>(&mut self, time: i64, target_buffs: &mut TTargetBuffs, target_health: f64) -> f64 {
         // TODO: We assume all these multipliers are additive, but it's not tested.
 
@@ -410,6 +421,10 @@ impl<TUptimes: BuffUptimes> PlayerStats<TUptimes> {
             WeaponType::TwoHanded => 0.05,
         };
 
+        let kallas_fervor = self.buff_uptimes.get_stack_count(ids::skills::KALLAS_FERVOR, time);
+        assert!(kallas_fervor <= gamedata::get_stack_limit(ids::skills::KALLAS_FERVOR));
+        multiplier += kallas_fervor as f64 * stats::KALLAS_FERVOR_CONDITION_DAMAGE_MULTIPLIER;
+
         // TODO: Put behind trait flag
         // Targeted Destruction
         let target_vuln = target_buffs.get_stack_count(ids::skills::VULNERABILITY, time);
@@ -421,6 +436,26 @@ impl<TUptimes: BuffUptimes> PlayerStats<TUptimes> {
         if target_health >= 0.8 {
             multiplier += 0.25;
         }
+
+        multiplier
+    }
+
+    fn life_steal_damage_mult(&mut self, time: i64)-> f64 {
+        let mut multiplier = 1.0;
+        // TODO: Put behind trait flag
+        // Destructive Impulses
+        let weapon_type = match self.weapon_set {
+            WeaponSet::Land1 => &self.weapon_set_types[0],
+            WeaponSet::Land2 => &self.weapon_set_types[1],
+        };
+        multiplier *= 1. + match weapon_type {
+            WeaponType::DualWield => 0.1,
+            WeaponType::TwoHanded => 0.05,
+        };
+
+        let kallas_fervor = self.buff_uptimes.get_stack_count(ids::skills::KALLAS_FERVOR, time);
+        assert!(kallas_fervor <= gamedata::get_stack_limit(ids::skills::KALLAS_FERVOR));
+        multiplier += kallas_fervor as f64 * stats::KALLAS_FERVOR_CONDITION_DAMAGE_MULTIPLIER;
 
         multiplier
     }
@@ -478,11 +513,11 @@ impl DamageDistribution {
 
 fn main() {
     // step 0: load gamedata
-    let gamedata = SkillData::from_file("gamedata/damage-multipliers-2021.03.11").expect("Failed to read skill data");
+    let gamedata = SkillData::from_file("gamedata/damage-multipliers-2021.05.11").expect("Failed to read skill data");
 
     // step 1: open arcdps file (unzip if needed)
     //let log_bytes = std::fs::read("logs/20210322-195505.evtc").expect("Failed to read log file");
-    let log_bytes = std::fs::read("logs/20210408-013544.evtc").expect("Failed to read log file");
+    let log_bytes = std::fs::read("logs/20210524-141825.evtc").expect("Failed to read log file");
 
     // step 2: parse structs
     let evtc_log = evtc::parsing::evtc_parser(&log_bytes).expect("Failed to parse log").1;
@@ -509,24 +544,24 @@ fn main() {
         ferocity: 0,
         condition_damage: 1672,
         expertise: 633,
-        weapon_set: WeaponSet::Land1, // Started on shortbow
+        weapon_set: WeaponSet::Land2, // Started on mace/axe
         weapon_set_types: [WeaponType::TwoHanded, WeaponType::DualWield],
-        set_1_sigils: [Sigil::Earth, Sigil::Geomancy],
+        set_1_sigils: [Sigil::Frailty, Sigil::Geomancy],
         set_2_sigils: [Sigil::Earth, Sigil::Doom],
-        extra_condition_durations_all: 0.2,
+        extra_condition_durations_all: 0.2, // Nightmare runes
         extra_condition_durations: std::array::IntoIter::new([
-            (ids::skills::BLEEDING, 0.1),
-            (ids::skills::BURNING, 0.1),
-            (ids::skills::POISONED, 0.1),
-            (ids::skills::CONFUSION, 0.1),
-            (ids::skills::TORMENT, 0.1),
+            (ids::skills::BLEEDING, 0.1), // Yearning Empowerment
+            (ids::skills::BURNING, 0.1), // Yearning Empowerment
+            (ids::skills::POISONED, 0.1), // Yearning Empowerment
+            (ids::skills::CONFUSION, 0.1), // Yearning Empowerment
+            (ids::skills::TORMENT, 0.1), // Yearning Empowerment
         ]).collect(),
         extra_condition_durations_under_buff: std::array::IntoIter::new([
             (ids::skills::BLEEDING, (ids::skills::FURY, 0.25)),
         ]).collect(),
         extra_condition_damages: std::array::IntoIter::new([
-            (DamagingCondition::Torment, 0.1),
-            (DamagingCondition::Bleeding, 0.25),
+            (DamagingCondition::Torment, 0.1), // Acolyte of Torment
+            (DamagingCondition::Bleeding, 0.25), // Heartpiercer
         ]).collect(),
         concentration: 0,
         buff_uptimes: LogBuffUptimes { stack_counts: Default::default() },
@@ -549,7 +584,7 @@ fn main() {
             let condition_damage_infusions = 18 - expertise_infusions;
 
             for runes in &[Runes::Nightmare, Runes::Tormenting, Runes::Tempest, Runes::TrapperWithBlackDiamond, Runes::TrapperWith25CondiDamage] {
-                for replacement_sigil11 in &[None, Some(Sigil::Bursting), Some(Sigil::Demons), Some(Sigil::Malice)] {
+                for replacement_sigil11 in &[None] {
                     for replacement_sigil12 in &[None, Some(Sigil::Bursting), Some(Sigil::Demons), Some(Sigil::Malice)] {
                         if replacement_sigil11.is_some() && replacement_sigil11 == replacement_sigil12 {
                             continue;
@@ -566,24 +601,24 @@ fn main() {
                                     ferocity: 0,
                                     condition_damage: 1672,
                                     expertise: 633,
-                                    weapon_set: WeaponSet::Land1, // Started on shortbow
+                                    weapon_set: WeaponSet::Land2, // Started on mace/axe
                                     weapon_set_types: [WeaponType::TwoHanded, WeaponType::DualWield],
-                                    set_1_sigils: [Sigil::Earth, Sigil::Geomancy],
+                                    set_1_sigils: [Sigil::Frailty, Sigil::Geomancy],
                                     set_2_sigils: [Sigil::Earth, Sigil::Doom],
-                                    extra_condition_durations_all: 0.2,
+                                    extra_condition_durations_all: 0.2, // Nightmare runes
                                     extra_condition_durations: std::array::IntoIter::new([
-                                        (ids::skills::BLEEDING, 0.1),
-                                        (ids::skills::BURNING, 0.1),
-                                        (ids::skills::POISONED, 0.1),
-                                        (ids::skills::CONFUSION, 0.1),
-                                        (ids::skills::TORMENT, 0.1),
+                                        (ids::skills::BLEEDING, 0.1), // Yearning Empowerment
+                                        (ids::skills::BURNING, 0.1), // Yearning Empowerment
+                                        (ids::skills::POISONED, 0.1), // Yearning Empowerment
+                                        (ids::skills::CONFUSION, 0.1), // Yearning Empowerment
+                                        (ids::skills::TORMENT, 0.1), // Yearning Empowerment
                                     ]).collect(),
                                     extra_condition_durations_under_buff: std::array::IntoIter::new([
                                         (ids::skills::BLEEDING, (ids::skills::FURY, 0.25)),
                                     ]).collect(),
                                     extra_condition_damages: std::array::IntoIter::new([
-                                        (DamagingCondition::Torment, 0.1),
-                                        (DamagingCondition::Bleeding, 0.25),
+                                        (DamagingCondition::Torment, 0.1), // Acolyte of Torment
+                                        (DamagingCondition::Bleeding, 0.25), // Heartpiercer
                                     ]).collect(),
                                     concentration: 0,
                                     buff_uptimes: SimBuffUptimes { states: Default::default() },
@@ -709,7 +744,7 @@ fn main() {
                                 }
 
 
-                                print!("Inf: E{} C{} | {:?} | [{:?};{:?}] [{:?};{:?}] | Chest {} |",
+                                print!("Inf: E{} C{} | {:?} | [{:?};{:?}] [{:?};{:?}] | Chest {} | ",
                                        expertise_infusions, condition_damage_infusions,
                                        runes,
                                        new_stats.set_1_sigils[0], new_stats.set_1_sigils[1],
@@ -717,7 +752,14 @@ fn main() {
                                        if chestplate_sinister { "S" } else { "V" }
                                 );
                                 let result = sim(new_stats, &simulation_events, &evtc_log.skills, enemy_max_health, remove_doom, remove_geomancy, remove_earth_1, remove_earth_2);
-                                println!("{}", result.total_damage())
+                                println!("{}", result.total_damage());
+                                for (skill, damage) in result.damage_by_skill.iter().sorted_by_key(|(&skill, &damage)| -(damage as i64)) {
+                                    if let Some(name) = evtc_log.skills.iter().filter(|x| x.id == *skill as i32).map(|x| &x.name).next() {
+                                        println!("{};{};{}", skill, name, damage);
+                                    } else {
+                                        println!("{};Unknown name;{}", skill, damage);
+                                    }
+                                }
                             }
                         }
                     }
@@ -886,7 +928,8 @@ fn sim(mut stats: PlayerStats<SimBuffUptimes>,
                 //);
             }
             LifeStealHit { time, base_damage, power_scaling, source } => {
-                let damage = *base_damage as f64 + stats.power(*time) as f64 * power_scaling;
+                let mut damage = *base_damage as f64 + stats.power(*time) as f64 * power_scaling;
+                damage *= stats.life_steal_damage_mult(*time);
                 if let LifeStealSource::Buff(buff_id) = source {
                     damage_distribution.add_damage(*buff_id, damage.round() as u64);
                     // May be a bit off if might share happens at the same time, the order
